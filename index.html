@@ -2,9 +2,7 @@
 <html lang="en">
 <head>
   <link rel="icon" type="image/png" href="/Logo.png" />
-
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-
   <meta charset="utf-8" />
   <title>Pi Control</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -12,26 +10,49 @@
 </head>
 <body>
   <main class="wrap">
+    <!-- Power card (unchanged ids/classes so your existing flow keeps working) -->
     <section class="card" id="card-power">
-      <h2>
-        Pi Control
-      </h2>
-      <p>Press to power on the Unraid server</p>
+      <h2>Pi Control</h2>
+      <p>Press to power on the Unraid server.</p>
       <button id="power" class="btn btn-primary">Power On</button>
       <div id="status" class="status"></div>
       <p class="muted">Triggers GPIO signal through optocoupler</p>
     </section>
 
+    <!-- NEW: Status card inserted immediately after the power card -->
+    <section class="card" id="card-status">
+      <h2>Unraid Status</h2>
+
+      <div class="lights">
+        <div class="light">
+          <span class="dot" id="dot-tailscale" title="Tailscale"></span>
+          <span>Tailscale</span>
+        </div>
+        <div class="light">
+          <span class="dot" id="dot-unraid" title="Unraid via Cloudflare"></span>
+          <span>Unraid (Cloudflare)</span>
+        </div>
+      </div>
+
+      <div class="countdown-wrap">
+        <svg id="boot-timer" viewBox="0 0 120 120" class="ring" aria-label="Boot timer">
+          <circle cx="60" cy="60" r="54" class="ring-bg"></circle>
+          <circle cx="60" cy="60" r="54" class="ring-fg" id="ring-fg"></circle>
+          <text x="60" y="66" text-anchor="middle" class="ring-text" id="ring-text">--:--</text>
+        </svg>
+        <div class="hint muted" id="boot-hint">Waiting for boot window…</div>
+      </div>
+    </section>
+
     <section class="card">
       <h2>Quick Links</h2>
-      <p>Recently powered on servers may take a moment to work</p>
+      <p>Recently powered servers may take a moment to work.</p>
       <div class="row">
-        <a class="btn btn-primary" href="https://unraid.davisbisbee.com" target="_blank">Open Unraid</a>
-        <a class="btn btn-primary" href="https://ssh-pi.davisbisbee.com" target="_blank">SSH to Pi (browser)</a>
+        <a class="btn btn-primary" href="https://unraid.davisbisbee.com" target="_blank" rel="noopener">Open Unraid</a>
+        <a class="btn btn-primary" href="https://ssh-pi.davisbisbee.com" target="_blank" rel="noopener">SSH to Pi (browser)</a>
       </div>
     </section>
   </main>
   <script src="app.js"></script>
-
 </body>
 </html>
