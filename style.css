@@ -9,12 +9,9 @@
   --ok: #22c55e;
   --warn: #eab308;
   --bad: #ef4444;
-  --ring-bg: #e5e7eb;
-  --ring-fg: #9ca3af;
 }
 
 * { box-sizing: border-box; }
-
 html, body { height: 100%; }
 
 body {
@@ -41,7 +38,6 @@ body {
 }
 
 .card h2 { margin: 4px 0 8px; font-weight: 700; letter-spacing: 0.2px; }
-
 p { margin: 8px 0; }
 .muted { color: var(--muted); }
 
@@ -82,7 +78,7 @@ p { margin: 8px 0; }
 }
 .flash { animation: flash 650ms ease; }
 
-/* --- status lights + countdown (added) --- */
+/* status lights + countdown */
 .lights{ display:flex; gap:16px; align-items:center; margin:.5rem 0 1rem }
 .light{ display:flex; gap:8px; align-items:center }
 .dot{ width:12px; height:12px; border-radius:50%; background:#777; box-shadow:0 0 0 2px rgba(0,0,0,.05) inset }
@@ -92,13 +88,6 @@ p { margin: 8px 0; }
 
 .countdown-wrap{ display:grid; place-items:center; margin-top:4px }
 .ring{ width:120px; height:120px }
-.ring-bg{ fill:none; stroke: var(--ring-bg); stroke-width:12 }
-.ring-fg{
-  fill:none; stroke: var(--ring-fg); stroke-width:12; stroke-linecap:round;
-  transform:rotate(-90deg); transform-origin:50% 50%;
-  stroke-dasharray:339.292; /* 2πr with r=54 */
-  stroke-dashoffset:339.292;
-}
 .ring-text{ font:700 18px/1.1 system-ui, sans-serif; fill: var(--text) }
 
 /* focus ring */

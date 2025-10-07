@@ -10,7 +10,7 @@
 </head>
 <body>
   <main class="wrap">
-    <!-- Power card (unchanged ids/classes so your existing flow keeps working) -->
+    <!-- Power card -->
     <section class="card" id="card-power">
       <h2>Pi Control</h2>
       <p>Press to power on the Unraid server.</p>
@@ -19,7 +19,7 @@
       <p class="muted">Triggers GPIO signal through optocoupler</p>
     </section>
 
-    <!-- NEW: Status card inserted immediately after the power card -->
+    <!-- Status card (inserted right after power card) -->
     <section class="card" id="card-status">
       <h2>Unraid Status</h2>
 
@@ -36,8 +36,9 @@
 
       <div class="countdown-wrap">
         <svg id="boot-timer" viewBox="0 0 120 120" class="ring" aria-label="Boot timer">
-          <circle cx="60" cy="60" r="54" class="ring-bg"></circle>
-          <circle cx="60" cy="60" r="54" class="ring-fg" id="ring-fg"></circle>
+          <!-- Inline attributes to avoid any CSS load issues -->
+          <circle cx="60" cy="60" r="54" class="ring-bg" fill="none" stroke="#e5e7eb" stroke-width="12"></circle>
+          <circle cx="60" cy="60" r="54" class="ring-fg" id="ring-fg" fill="none" stroke="#9ca3af" stroke-width="12" stroke-linecap="round"></circle>
           <text x="60" y="66" text-anchor="middle" class="ring-text" id="ring-text">--:--</text>
         </svg>
         <div class="hint muted" id="boot-hint">Waiting for boot window…</div>
