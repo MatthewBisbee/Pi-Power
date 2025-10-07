@@ -1,0 +1,404 @@
+You’re right: to make the timer + status **sync for everyone** (and keep polling even if Unraid is already up), we need a tiny backend state. Below are:
+
+1. A **minimal Flask patch** (adds two routes; won’t break `/press`).
+2. **Full rewrites** of your three files wired to those routes.
+
+   * Polls continuously, regardless of button state.
+   * Timer is anchored to a server-side timestamp so all clients see the same countdown.
+   * If Unraid comes up early, UI flips to READY immediately.
+
+If you only drop the 3 files without adding the Flask patch, the UI won’t update (the server JSON won’t exist). So please add the small Flask snippet when you can.
+
+---
+
+# 0) Minimal Flask patch (add to `/home/chungy/powerbtn/app.py`)
+
+Place these near the top (with your other imports) and at the bottom as routes. This does not change `/press`.
+
+```python
+# --- ADD near existing imports ---
+import time, subprocess, json
+import requests
+
+boot_start_ms = None           # shared start time (ms since epoch)
+BOOT_SECONDS = 260             # 4m20s
+UNRAID_CF_URL = "https://unraid.davisbisbee.com"
+
+def cf_health():
+    """Return (ok, is_1033)."""
+    try:
+        r = requests.get(UNRAID_CF_URL, timeout=3)
+        body = r.text.lower()
+        is_1033 = ("1033" in body) or ("error code: 1033" in body)
+        ok = (200 <= r.status_code < 400) and (not is_1033)
+        return ok, is_1033
+    except Exception:
+        return False, False
+
+def tailscale_online(host_hint="unraid"):
+    """Optional: green if Unraid is online in your tailnet; returns False on any error."""
+    try:
+        out = subprocess.check_output(["tailscale","status","--json"], timeout=1.0)
+        data = json.loads(out.decode("utf-8","ignore"))
+        peers = []
+        if isinstance(data.get("Peer"), dict): peers.extend(data["Peer"].values())
+        if isinstance(data.get("Peers"), list): peers.extend(data["Peers"])
+        for p in peers:
+            hn = (p.get("HostName") or "").lower()
+            if host_hint.lower() in hn and p.get("Online"): return True
+        return False
+    except Exception:
+        return False
+
+# --- ADD: health endpoint (polled by frontend every 3s) ---
+@app.get("/api/unraid-health")
+def api_unraid_health():
+    global boot_start_ms
+    ok, is1033 = cf_health()
+    ts_ok = tailscale_online("unraid")  # adjust hint if your TS hostname differs
+    return {
+        "cloudflareOk": ok,
+        "cloudflare1033": is1033,
+        "tailscaleOnline": ts_ok,
+        "bootStart": boot_start_ms,      # None until boot marked
+        "etaSeconds": BOOT_SECONDS,
+        "now": int(time.time() * 1000),
+    }
+
+# --- ADD: shared countdown start (called right after /press) ---
+@app.post("/api/boot-mark")
+def api_boot_mark():
+    global boot_start_ms
+    boot_start_ms = int(time.time() * 1000)
+    return {"ok": True, "bootStart": boot_start_ms, "etaSeconds": BOOT_SECONDS}
+```
+
+Restart your Flask app (or Waitress service) when convenient.
+
+---
+
+# 1) `index.html` (full file)
+
+```html
+<!doctype html>
+<html lang="en">
+<head>
+  <link rel="icon" type="image/png" href="/Logo.png" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <meta charset="utf-8" />
+  <title>Pi Control</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="wrap">
+    <!-- Power card -->
+    <section class="card" id="card-power">
+      <h2>Pi Control</h2>
+      <p>Press to power on the Unraid server.</p>
+      <button id="power" class="btn btn-primary">Power On</button>
+      <div id="status" class="status"></div>
+      <p class="muted">Triggers GPIO signal through optocoupler</p>
+    </section>
+
+    <!-- Status card (inserted right after power card) -->
+    <section class="card" id="card-status">
+      <h2>Unraid Status</h2>
+
+      <div class="lights">
+        <div class="light">
+          <span class="dot" id="dot-tailscale" title="Tailscale"></span>
+          <span>Tailscale</span>
+        </div>
+        <div class="light">
+          <span class="dot" id="dot-unraid" title="Unraid via Cloudflare"></span>
+          <span>Unraid (Cloudflare)</span>
+        </div>
+      </div>
+
+      <div class="countdown-wrap">
+        <svg id="boot-timer" viewBox="0 0 120 120" class="ring" aria-label="Boot timer">
+          <!-- Inline attributes to avoid any CSS load issues -->
+          <circle cx="60" cy="60" r="54" class="ring-bg" fill="none" stroke="#e5e7eb" stroke-width="12"></circle>
+          <circle cx="60" cy="60" r="54" class="ring-fg" id="ring-fg" fill="none" stroke="#9ca3af" stroke-width="12" stroke-linecap="round"></circle>
+          <text x="60" y="66" text-anchor="middle" class="ring-text" id="ring-text">--:--</text>
+        </svg>
+        <div class="hint muted" id="boot-hint">Waiting for boot window…</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Quick Links</h2>
+      <p>Recently powered servers may take a moment to work.</p>
+      <div class="row">
+        <a class="btn btn-primary" href="https://unraid.davisbisbee.com" target="_blank" rel="noopener">Open Unraid</a>
+        <a class="btn btn-primary" href="https://ssh-pi.davisbisbee.com" target="_blank" rel="noopener">SSH to Pi (browser)</a>
+      </div>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
+```
+
+---
+
+# 2) `style.css` (full file)
+
+```css
+/* layout + theme */
+:root {
+  --bg: #0b1220;
+  --card: #111827;
+  --text: #e6e9ef;
+  --muted: #96a0af;
+  --primary: #2563eb;
+  --primary-contrast: #ffffff;
+  --ok: #22c55e;
+  --warn: #eab308;
+  --bad: #ef4444;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Inter, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+  background: radial-gradient(1000px 600px at 50% -10%, #111b33 0%, var(--bg) 45%);
+  color: var(--text);
+}
+
+.wrap {
+  max-width: 920px;
+  margin: 40px auto;
+  padding: 0 16px;
+  display: grid;
+  gap: 20px;
+}
+
+.card {
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0));
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 14px;
+  padding: 16px 18px 18px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.25);
+}
+
+.card h2 { margin: 4px 0 8px; font-weight: 700; letter-spacing: 0.2px; }
+p { margin: 8px 0; }
+.muted { color: var(--muted); }
+
+.row { display: flex; gap: 10px; flex-wrap: wrap; }
+
+.btn {
+  appearance: none;
+  border: none;
+  cursor: pointer;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+.btn-primary {
+  background: var(--primary);
+  color: var(--primary-contrast);
+}
+.btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* status line for /press feedback */
+.status {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.06);
+  display: none;
+}
+.status.show { display: block; }
+.status.ok { border-color: rgba(34,197,94,0.35); background: rgba(34,197,94,0.08); }
+.status.err { border-color: rgba(239,68,68,0.35); background: rgba(239,68,68,0.08); }
+
+/* success flash */
+@keyframes flash {
+  0% { box-shadow: 0 0 0 rgba(34,197,94,0); }
+  50% { box-shadow: 0 0 0 6px rgba(34,197,94,0.35); }
+  100% { box-shadow: 0 0 0 rgba(34,197,94,0); }
+}
+.flash { animation: flash 650ms ease; }
+
+/* status lights + countdown */
+.lights{ display:flex; gap:16px; align-items:center; margin:.5rem 0 1rem }
+.light{ display:flex; gap:8px; align-items:center }
+.dot{ width:12px; height:12px; border-radius:50%; background:#777; box-shadow:0 0 0 2px rgba(0,0,0,.05) inset }
+.dot.ok{ background: var(--ok) }
+.dot.warn{ background: var(--warn) }
+.dot.bad{ background: var(--bad) }
+
+.countdown-wrap{ display:grid; place-items:center; margin-top:4px }
+.ring{ width:120px; height:120px }
+.ring-text{ font:700 18px/1.1 system-ui, sans-serif; fill: var(--text) }
+
+/* focus ring */
+button:focus, a:focus, .btn:focus {
+  outline:2px solid #93c5fd; outline-offset:3px; border-radius:14px
+}
+```
+
+> Note: I moved the circle stroke/fill to inline attributes in HTML to prevent any CSS loading order issues (which likely caused the big black disk you saw).
+
+---
+
+# 3) `app.js` (full file)
+
+```js
+// Existing elements
+const btn = document.getElementById('power');
+const statusEl = document.getElementById('status');
+const card = document.getElementById('card-power');
+
+// Status lights + countdown
+const dotTail = document.getElementById('dot-tailscale');
+const dotUnraid = document.getElementById('dot-unraid');
+const ring = document.getElementById('ring-fg');
+const ringText = document.getElementById('ring-text');
+const bootHint = document.getElementById('boot-hint');
+
+const CIRC = 339.292;      // 2πr with r=54
+let pollTimer = null;
+let tickTimer = null;
+let etaSeconds = 260;
+let bootStartMs = null;
+
+// ---- helpers ----
+function setDot(el, state) {
+  if (!el) return;
+  el.classList.remove('ok','warn','bad');
+  if (state) el.classList.add(state);
+}
+function fmtMMSS(sec) {
+  sec = Math.max(0, Math.ceil(sec));
+  const m = Math.floor(sec/60), s = sec % 60;
+  return (m<10?'0':'')+m+':'+(s<10?'0':'')+s;
+}
+function drawProgress(p) {
+  const off = CIRC * (1 - Math.max(0, Math.min(1, p)));
+  if (ring) ring.style.strokeDashoffset = String(off);
+}
+function startTicker() {
+  if (tickTimer) clearInterval(tickTimer);
+  tickTimer = setInterval(() => {
+    if (!bootStartMs || !etaSeconds || !ringText) return;
+    const now = Date.now();
+    const elapsed = (now - bootStartMs) / 1000;
+    const remaining = Math.max(0, etaSeconds - elapsed);
+    ringText.textContent = fmtMMSS(remaining);
+    drawProgress(Math.min(1, elapsed / etaSeconds));
+  }, 250);
+}
+
+// Poll server health continuously (even if nobody pressed the button)
+async function poll() {
+  try {
+    const r = await fetch('/api/unraid-health', { cache: 'no-store' });
+    if (!r.ok) throw new Error('health ' + r.status);
+    const j = await r.json();
+
+    // sync timer anchor & ETA from server
+    if (j.bootStart) {
+      if (bootStartMs !== j.bootStart) {
+        bootStartMs = j.bootStart;
+        etaSeconds = j.etaSeconds || 260;
+        if (bootHint) bootHint.textContent = 'Estimated boot window';
+        startTicker();
+      }
+    } else {
+      // no active boot window
+      bootStartMs = null;
+      drawProgress(0);
+      if (ringText) ringText.textContent = '--:--';
+      if (bootHint) bootHint.textContent = 'Waiting for boot window…';
+    }
+
+    // lights
+    setDot(dotTail, j.tailscaleOnline ? 'ok' : 'bad');
+    if (j.cloudflareOk) {
+      setDot(dotUnraid, 'ok');
+      if (ringText) ringText.textContent = 'READY';
+      drawProgress(1);
+      if (bootHint) bootHint.textContent = 'Unraid is ready';
+    } else {
+      setDot(dotUnraid, j.cloudflare1033 ? 'warn' : 'bad');
+    }
+  } catch (e) {
+    // server unreachable or error
+    setDot(dotTail, 'bad');
+    setDot(dotUnraid, 'bad');
+  }
+}
+
+function startPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  poll(); // immediate
+  pollTimer = setInterval(poll, 3000);
+}
+
+// Always poll, regardless of button state
+startPolling();
+
+/* ---------------- existing /press flow (unchanged semantics) ---------------- */
+btn.addEventListener('click', async () => {
+  btn.disabled = true;
+
+  // show status line
+  statusEl.textContent = 'Sending...';
+  statusEl.classList.add('show');
+  statusEl.classList.remove('ok','err');
+
+  try {
+    const r = await fetch('/press', { method: 'POST' });
+    if (r.ok) {
+      statusEl.textContent = 'Sent.';
+      statusEl.classList.add('ok');
+      statusEl.classList.remove('err');
+
+      // Tell server to start the shared countdown
+      try {
+        const m = await fetch('/api/boot-mark', { method: 'POST' });
+        if (m.ok) {
+          const j = await m.json();
+          bootStartMs = j.bootStart;
+          etaSeconds = j.etaSeconds || 260;
+          if (bootHint) bootHint.textContent = 'Estimated boot window';
+          startTicker();
+        }
+      } catch {}
+
+      // success flash on the card
+      card.classList.remove('flash');
+      void card.offsetWidth;
+      card.classList.add('flash');
+
+    } else {
+      statusEl.textContent = 'Error ' + r.status;
+      statusEl.classList.add('err');
+      statusEl.classList.remove('ok');
+    }
+  } catch {
+    statusEl.textContent = 'Network error';
+    statusEl.classList.add('err');
+    statusEl.classList.remove('ok');
+  } finally {
+    setTimeout(() => { btn.disabled = false; }, 10000); // 10s lockout
+  }
+});
+```
+
+---
+
+## Why your earlier try showed a big black disk
+
+Your browser was rendering the `<circle>` elements with default fill (black) because the CSS that sets `fill:none` likely didn’t load or didn’t apply. I moved the critical `fill`/`stroke` onto the SVG elements inline so the ring visual works even if CSS is late or cached oddly.
+
+---
+
+If you want me to also add a tiny “Cancel boot window” button (clears `boot_start_ms` server-side) or to make the ETA configurable via query/env, I can include that, but the above gets the synced status + countdown working cleanly with minimal change.
