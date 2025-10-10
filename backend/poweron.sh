@@ -1,6 +1,6 @@
+#!/bin/bash
 #/home/chungy/poweron.sh
 
-#!/bin/bash
 set -u
 # 2s pulse, then 5s hard pull-down (timeout returns 124, which we ignore)
 gpioset --mode=time --sec=2 --bias=pull-down $(gpiofind GPIO27)=1
