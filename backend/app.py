@@ -1,4 +1,3 @@
-#test
 #/home/chungy/powerbtn/app.py
 
 from flask import Flask, abort, request
