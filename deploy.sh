@@ -29,7 +29,7 @@ REMOTE_VENV="/home/chungy/powerbtn-venv"
 REMOTE_NGX_AVAIL="/etc/nginx/sites-available/pi"
 REMOTE_NGX_ENABLED="/etc/nginx/sites-enabled/pi"
 
-# ---------- 1) Commit & push (optional but recommended) ----------
+# ---------- 1) Commit & push ----------
 if git -C "${ROOT_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   git -C "${ROOT_DIR}" add -A
   if ! git -C "${ROOT_DIR}" diff --cached --quiet; then
@@ -40,7 +40,7 @@ else
   echo "Note: not a Git repo; skipping commit/push."
 fi
 
-# ---------- 2) Web: rsync web/ → /var/www/html (with ProxyCommand via -e) ----------
+# ---------- 2) Web: rsync web/ → /var/www/html ----------
 rsync -e "${SSH_PROXY}" -avz --delete \
   --exclude '.git' --exclude '.gitignore' --exclude '.DS_Store' \
   "${WEB_DIR}/" "${PI_HOST}:${REMOTE_HTML}/"
@@ -60,13 +60,17 @@ if [[ -f "${BACKEND_DIR}/poweron.sh" ]]; then
   "${SSH_CMD[@]}" "${PI_HOST}" "chmod 0755 '${REMOTE_POWER_SCRIPT}'"
 fi
 
-# nginx pi.conf -> /etc/nginx/sites-available/pi (+ enable + reload)
+# nginx pi.conf -> upload to /tmp, sudo install to sites-available, link, test, reload
 PUSHED_NGINX=0
 if [[ -f "${BACKEND_DIR}/pi.conf" ]]; then
-  "${SCP_CMD[@]}" "${BACKEND_DIR}/pi.conf" "${PI_HOST}:${REMOTE_NGX_AVAIL}"
+  "${SCP_CMD[@]}" "${BACKEND_DIR}/pi.conf" "${PI_HOST}:/tmp/pi.conf"
   "${SSH_CMD[@]}" "${PI_HOST}" "\
+    set -e; \
+    sudo install -m 0644 /tmp/pi.conf '${REMOTE_NGX_AVAIL}'; \
     if [ ! -e '${REMOTE_NGX_ENABLED}' ]; then sudo ln -s '${REMOTE_NGX_AVAIL}' '${REMOTE_NGX_ENABLED}'; fi; \
-    sudo nginx -t && sudo systemctl reload nginx"
+    sudo nginx -t; \
+    sudo systemctl reload nginx; \
+    rm -f /tmp/pi.conf"
   PUSHED_NGINX=1
 fi
 
@@ -75,7 +79,6 @@ if [[ -f "${BACKEND_DIR}/requirements.txt" ]]; then
   "${SSH_CMD[@]}" "${PI_HOST}" "\
     if [ ! -d '${REMOTE_VENV}' ]; then python3 -m venv '${REMOTE_VENV}'; fi; \
     '${REMOTE_VENV}/bin/pip' install --upgrade pip >/dev/null 2>&1 || true"
-  # send requirements via stdin to avoid temp files
   "${SSH_CMD[@]}" "${PI_HOST}" "cat > /tmp/req.txt" < "${BACKEND_DIR}/requirements.txt"
   "${SSH_CMD[@]}" "${PI_HOST}" "'${REMOTE_VENV}/bin/pip' install -r /tmp/req.txt"
   "${SSH_CMD[@]}" "${PI_HOST}" "rm -f /tmp/req.txt"
@@ -98,7 +101,12 @@ fi
   echo '--- DEPLOY SUMMARY ---'; \
   echo 'app.py     -> ${REMOTE_APP}'; head -n2 '${REMOTE_APP}' || true; \
   echo 'poweron.sh -> ${REMOTE_POWER_SCRIPT}'; ls -l '${REMOTE_POWER_SCRIPT}' || true; \
-  if [ ${PUSHED_NGINX} -eq 1 ]; then echo 'nginx: reloaded'; else echo 'nginx: unchanged'; fi; \
+  if [ ${PUSHED_NGINX} -eq 1 ]; then \
+    echo 'nginx: reloaded'; \
+    echo 'pi.conf paths:'; sudo ls -l '${REMOTE_NGX_AVAIL}' '${REMOTE_NGX_ENABLED}' || true; \
+  else \
+    echo 'nginx: unchanged'; \
+  fi; \
   pgrep -af 'waitress-serve --listen=127.0.0.1:8080' || echo 'waitress not detected'; \
   ss -ltnp 2>/dev/null | grep 127.0.0.1:8080 || true; \
   echo '----------------------'"
