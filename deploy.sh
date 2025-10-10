@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# -------- Settings (edit if your host/user change) --------
+# -------- Settings --------
 PI_HOST="chungy@ssh-pi.davisbisbee.com"
-export RSYNC_RSH='ssh -o ProxyCommand="cloudflared access ssh --hostname ssh-pi.davisbisbee.com"'
+
+# Cloudflared for ALL SSH-family ops
+SSH_CMD='ssh -o ProxyCommand="cloudflared access ssh --hostname ssh-pi.davisbisbee.com"'
+export RSYNC_RSH="${SSH_CMD}"
 
 # Remote paths
 REMOTE_HTML="/var/www/html"
@@ -17,7 +20,7 @@ REMOTE_NGX_ENABLED="/etc/nginx/sites-enabled/pi"
 WEB_DIR="./web"
 BACKEND_DIR="./backend"
 
-# -------- 1) Commit & push to GitHub (optional but recommended) --------
+# -------- 1) Commit & push to GitHub --------
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   git add -A
   if ! git diff --cached --quiet; then
@@ -36,11 +39,11 @@ rsync -avz --delete \
   "${WEB_DIR}/" "${PI_HOST}:${REMOTE_HTML}/"
 
 # -------- 3) Stage backend files on the Pi --------
-ssh ${PI_HOST} "mkdir -p ~/deploy_staging/backend"
+${SSH_CMD} ${PI_HOST} "mkdir -p ~/deploy_staging/backend"
 rsync -avz "${BACKEND_DIR}/" "${PI_HOST}:~/deploy_staging/backend/"
 
-# -------- 4) Apply backend on the Pi (copy, install deps, restart services) --------
-ssh -t ${PI_HOST} bash -lc "set -euo pipefail
+# -------- 4) Apply backend on the Pi --------
+${SSH_CMD} -t ${PI_HOST} bash -lc "set -euo pipefail
 
   STAGE=~/deploy_staging/backend
 
@@ -71,16 +74,13 @@ ssh -t ${PI_HOST} bash -lc "set -euo pipefail
   fi
 
   # Restart backend:
-  # 1) Prefer systemd service if it exists
   if systemctl list-unit-files | grep -q '^powerbtn\\.service'; then
     sudo systemctl daemon-reload
     sudo systemctl restart powerbtn.service
   else
-    # 2) Fallback: kill any running waitress and launch a fresh one under nohup
     pkill -f 'waitress-serve --listen=127.0.0.1:8080' || true
     nohup '${REMOTE_VENV}/bin/waitress-serve' --listen=127.0.0.1:8080 app:app \
-      --call 2>/dev/null >/dev/null &
-    # Give it a moment to bind
+      --call >/dev/null 2>&1 &
     sleep 1
   fi
 
