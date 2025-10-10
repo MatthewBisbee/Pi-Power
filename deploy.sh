@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ---------- Locate repo root (works if script lives at root or in web/) ----------
+# ---------- Locate repo root (works if script is at root or in web/) ----------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -d "${SCRIPT_DIR}/backend" && -d "${SCRIPT_DIR}/web" ]]; then
   ROOT_DIR="${SCRIPT_DIR}"
@@ -17,9 +17,9 @@ BACKEND_DIR="${ROOT_DIR}/backend"
 
 # ---------- Remote host + paths ----------
 PI_HOST="chungy@ssh-pi.davisbisbee.com"
-SSH_BASE_OPTS='-o ProxyCommand=cloudflared\ access\ ssh\ --hostname\ ssh-pi.davisbisbee.com'
-SSH_CMD="ssh ${SSH_BASE_OPTS}"
-SCP_CMD="scp ${SSH_BASE_OPTS}"
+SSH_PROXY='ssh -o ProxyCommand="cloudflared access ssh --hostname ssh-pi.davisbisbee.com"'
+SCP_CMD=(scp -o ProxyCommand="cloudflared access ssh --hostname ssh-pi.davisbisbee.com")
+SSH_CMD=(ssh -o ProxyCommand="cloudflared access ssh --hostname ssh-pi.davisbisbee.com")
 
 REMOTE_HTML="/var/www/html"
 REMOTE_APP_DIR="/home/chungy/powerbtn"
@@ -40,32 +40,31 @@ else
   echo "Note: not a Git repo; skipping commit/push."
 fi
 
-# ---------- 2) Web: rsync web/ → /var/www/html ----------
-export RSYNC_RSH="${SSH_CMD}"
-rsync -avz --delete \
+# ---------- 2) Web: rsync web/ → /var/www/html (with ProxyCommand via -e) ----------
+rsync -e "${SSH_PROXY}" -avz --delete \
   --exclude '.git' --exclude '.gitignore' --exclude '.DS_Store' \
   "${WEB_DIR}/" "${PI_HOST}:${REMOTE_HTML}/"
 
 # ---------- 3) Backend: ensure app dir exists ----------
-${SSH_CMD} "${PI_HOST}" "mkdir -p '${REMOTE_APP_DIR}'"
+"${SSH_CMD[@]}" "${PI_HOST}" "mkdir -p '${REMOTE_APP_DIR}'"
 
 # ---------- 4) Backend: copy single files ----------
 # app.py -> /home/chungy/powerbtn/app.py
 if [[ -f "${BACKEND_DIR}/app.py" ]]; then
-  ${SCP_CMD} "${BACKEND_DIR}/app.py" "${PI_HOST}:${REMOTE_APP}"
+  "${SCP_CMD[@]}" "${BACKEND_DIR}/app.py" "${PI_HOST}:${REMOTE_APP}"
 fi
 
 # poweron.sh -> /home/chungy/poweron.sh (0755)
 if [[ -f "${BACKEND_DIR}/poweron.sh" ]]; then
-  ${SCP_CMD} "${BACKEND_DIR}/poweron.sh" "${PI_HOST}:${REMOTE_POWER_SCRIPT}"
-  ${SSH_CMD} "${PI_HOST}" "chmod 0755 '${REMOTE_POWER_SCRIPT}'"
+  "${SCP_CMD[@]}" "${BACKEND_DIR}/poweron.sh" "${PI_HOST}:${REMOTE_POWER_SCRIPT}"
+  "${SSH_CMD[@]}" "${PI_HOST}" "chmod 0755 '${REMOTE_POWER_SCRIPT}'"
 fi
 
 # nginx pi.conf -> /etc/nginx/sites-available/pi (+ enable + reload)
 PUSHED_NGINX=0
 if [[ -f "${BACKEND_DIR}/pi.conf" ]]; then
-  ${SCP_CMD} "${BACKEND_DIR}/pi.conf" "${PI_HOST}:${REMOTE_NGX_AVAIL}"
-  ${SSH_CMD} "${PI_HOST}" "\
+  "${SCP_CMD[@]}" "${BACKEND_DIR}/pi.conf" "${PI_HOST}:${REMOTE_NGX_AVAIL}"
+  "${SSH_CMD[@]}" "${PI_HOST}" "\
     if [ ! -e '${REMOTE_NGX_ENABLED}' ]; then sudo ln -s '${REMOTE_NGX_AVAIL}' '${REMOTE_NGX_ENABLED}'; fi; \
     sudo nginx -t && sudo systemctl reload nginx"
   PUSHED_NGINX=1
@@ -73,18 +72,18 @@ fi
 
 # ---------- 5) Backend: venv & requirements (only if requirements.txt exists) ----------
 if [[ -f "${BACKEND_DIR}/requirements.txt" ]]; then
-  # copy requirements on-the-fly via stdin to avoid temp files
-  ${SSH_CMD} "${PI_HOST}" "\
+  "${SSH_CMD[@]}" "${PI_HOST}" "\
     if [ ! -d '${REMOTE_VENV}' ]; then python3 -m venv '${REMOTE_VENV}'; fi; \
     '${REMOTE_VENV}/bin/pip' install --upgrade pip >/dev/null 2>&1 || true"
-  ${SSH_CMD} "${PI_HOST}" "cat > /tmp/req.txt" < "${BACKEND_DIR}/requirements.txt"
-  ${SSH_CMD} "${PI_HOST}" "'${REMOTE_VENV}/bin/pip' install -r /tmp/req.txt"
-  ${SSH_CMD} "${PI_HOST}" "rm -f /tmp/req.txt"
+  # send requirements via stdin to avoid temp files
+  "${SSH_CMD[@]}" "${PI_HOST}" "cat > /tmp/req.txt" < "${BACKEND_DIR}/requirements.txt"
+  "${SSH_CMD[@]}" "${PI_HOST}" "'${REMOTE_VENV}/bin/pip' install -r /tmp/req.txt"
+  "${SSH_CMD[@]}" "${PI_HOST}" "rm -f /tmp/req.txt"
 fi
 
 # ---------- 6) Backend: respring backend process safely ----------
 # Prefer systemd (powerbtn.service). Otherwise, kill+nohup Waitress.
-${SSH_CMD} "${PI_HOST}" "\
+"${SSH_CMD[@]}" "${PI_HOST}" "\
   if systemctl list-unit-files | grep -q '^powerbtn\\.service'; then
     sudo systemctl daemon-reload
     sudo systemctl restart powerbtn.service
@@ -95,9 +94,9 @@ ${SSH_CMD} "${PI_HOST}" "\
   fi"
 
 # ---------- 7) Helpful summary ----------
-${SSH_CMD} "${PI_HOST}" "\
+"${SSH_CMD[@]}" "${PI_HOST}" "\
   echo '--- DEPLOY SUMMARY ---'; \
-  echo 'app.py     -> ${REMOTE_APP}'; head -n1 '${REMOTE_APP}' || true; \
+  echo 'app.py     -> ${REMOTE_APP}'; head -n2 '${REMOTE_APP}' || true; \
   echo 'poweron.sh -> ${REMOTE_POWER_SCRIPT}'; ls -l '${REMOTE_POWER_SCRIPT}' || true; \
   if [ ${PUSHED_NGINX} -eq 1 ]; then echo 'nginx: reloaded'; else echo 'nginx: unchanged'; fi; \
   pgrep -af 'waitress-serve --listen=127.0.0.1:8080' || echo 'waitress not detected'; \
