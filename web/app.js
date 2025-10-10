@@ -1,4 +1,4 @@
-//  /var/www/html/
+//File location on Pi: /var/www/html/
 
 // Existing elements
 const btn = document.getElementById('power');

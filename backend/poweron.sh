@@ -1,5 +1,5 @@
 #!/bin/bash
-#/home/chungy/poweron.sh
+#File location on Pi: /home/chungy/poweron.sh
 
 set -u
 # 2s pulse, then 5s hard pull-down (timeout returns 124, which we ignore)

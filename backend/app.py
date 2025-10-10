@@ -1,4 +1,4 @@
-#/home/chungy/powerbtn/app.py
+#File location on Pi: /home/chungy/powerbtn/app.py
 
 from flask import Flask, abort, request
 import subprocess
