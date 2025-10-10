@@ -1,3 +1,5 @@
+//  /var/www/html/
+
 // Existing elements
 const btn = document.getElementById('power');
 const statusEl = document.getElementById('status');
