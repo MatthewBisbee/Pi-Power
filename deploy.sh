@@ -1,90 +1,107 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# -------- Settings --------
+# ---------- Locate repo root (works if script lives at root or in web/) ----------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -d "${SCRIPT_DIR}/backend" && -d "${SCRIPT_DIR}/web" ]]; then
+  ROOT_DIR="${SCRIPT_DIR}"
+elif [[ -d "${SCRIPT_DIR}/../backend" && -d "${SCRIPT_DIR}/../web" ]]; then
+  ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+else
+  echo "Error: cannot find repo root containing 'web/' and 'backend/' near this script." >&2
+  exit 1
+fi
+
+WEB_DIR="${ROOT_DIR}/web"
+BACKEND_DIR="${ROOT_DIR}/backend"
+
+# ---------- Remote host + paths ----------
 PI_HOST="chungy@ssh-pi.davisbisbee.com"
+SSH_BASE_OPTS='-o ProxyCommand=cloudflared\ access\ ssh\ --hostname\ ssh-pi.davisbisbee.com'
+SSH_CMD="ssh ${SSH_BASE_OPTS}"
+SCP_CMD="scp ${SSH_BASE_OPTS}"
 
-# Cloudflared for ALL SSH-family ops
-SSH_CMD='ssh -o ProxyCommand="cloudflared access ssh --hostname ssh-pi.davisbisbee.com"'
-export RSYNC_RSH="${SSH_CMD}"
-
-# Remote paths
 REMOTE_HTML="/var/www/html"
 REMOTE_APP_DIR="/home/chungy/powerbtn"
-REMOTE_VENV="/home/chungy/powerbtn-venv"
+REMOTE_APP="${REMOTE_APP_DIR}/app.py"
 REMOTE_POWER_SCRIPT="/home/chungy/poweron.sh"
+REMOTE_VENV="/home/chungy/powerbtn-venv"
 REMOTE_NGX_AVAIL="/etc/nginx/sites-available/pi"
 REMOTE_NGX_ENABLED="/etc/nginx/sites-enabled/pi"
 
-# Local paths
-WEB_DIR="./web"
-BACKEND_DIR="./backend"
-
-# -------- 1) Commit & push to GitHub --------
-if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  git add -A
-  if ! git diff --cached --quiet; then
-    git commit -m "deploy: $(date -u +'%Y-%m-%d %H:%M:%S') UTC"
+# ---------- 1) Commit & push (optional but recommended) ----------
+if git -C "${ROOT_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  git -C "${ROOT_DIR}" add -A
+  if ! git -C "${ROOT_DIR}" diff --cached --quiet; then
+    git -C "${ROOT_DIR}" commit -m "deploy: $(date -u +'%Y-%m-%d %H:%M:%S') UTC"
   fi
-  git push -u origin HEAD
+  git -C "${ROOT_DIR}" push -u origin HEAD
 else
-  echo "Warning: not a git repo; skipping commit/push."
+  echo "Note: not a Git repo; skipping commit/push."
 fi
 
-# -------- 2) Sync web files to /var/www/html --------
+# ---------- 2) Web: rsync web/ → /var/www/html ----------
+export RSYNC_RSH="${SSH_CMD}"
 rsync -avz --delete \
-  --exclude '.git' \
-  --exclude '.gitignore' \
-  --exclude '.DS_Store' \
+  --exclude '.git' --exclude '.gitignore' --exclude '.DS_Store' \
   "${WEB_DIR}/" "${PI_HOST}:${REMOTE_HTML}/"
 
-# -------- 3) Stage backend files on the Pi --------
-${SSH_CMD} ${PI_HOST} "mkdir -p ~/deploy_staging/backend"
-rsync -avz "${BACKEND_DIR}/" "${PI_HOST}:~/deploy_staging/backend/"
+# ---------- 3) Backend: ensure app dir exists ----------
+${SSH_CMD} "${PI_HOST}" "mkdir -p '${REMOTE_APP_DIR}'"
 
-# -------- 4) Apply backend on the Pi --------
-${SSH_CMD} -t ${PI_HOST} bash -lc "set -euo pipefail
+# ---------- 4) Backend: copy single files ----------
+# app.py -> /home/chungy/powerbtn/app.py
+if [[ -f "${BACKEND_DIR}/app.py" ]]; then
+  ${SCP_CMD} "${BACKEND_DIR}/app.py" "${PI_HOST}:${REMOTE_APP}"
+fi
 
-  STAGE=~/deploy_staging/backend
+# poweron.sh -> /home/chungy/poweron.sh (0755)
+if [[ -f "${BACKEND_DIR}/poweron.sh" ]]; then
+  ${SCP_CMD} "${BACKEND_DIR}/poweron.sh" "${PI_HOST}:${REMOTE_POWER_SCRIPT}"
+  ${SSH_CMD} "${PI_HOST}" "chmod 0755 '${REMOTE_POWER_SCRIPT}'"
+fi
 
-  # Ensure app dir exists
-  mkdir -p '${REMOTE_APP_DIR}'
+# nginx pi.conf -> /etc/nginx/sites-available/pi (+ enable + reload)
+PUSHED_NGINX=0
+if [[ -f "${BACKEND_DIR}/pi.conf" ]]; then
+  ${SCP_CMD} "${BACKEND_DIR}/pi.conf" "${PI_HOST}:${REMOTE_NGX_AVAIL}"
+  ${SSH_CMD} "${PI_HOST}" "\
+    if [ ! -e '${REMOTE_NGX_ENABLED}' ]; then sudo ln -s '${REMOTE_NGX_AVAIL}' '${REMOTE_NGX_ENABLED}'; fi; \
+    sudo nginx -t && sudo systemctl reload nginx"
+  PUSHED_NGINX=1
+fi
 
-  # Ensure venv exists + install deps (idempotent)
-  if [ ! -d '${REMOTE_VENV}' ]; then
-    python3 -m venv '${REMOTE_VENV}'
-  fi
-  '${REMOTE_VENV}/bin/pip' install --upgrade pip >/dev/null
-  if [ -f \"\${STAGE}/requirements.txt\" ]; then
-    '${REMOTE_VENV}/bin/pip' install -r \"\${STAGE}/requirements.txt\"
-  fi
+# ---------- 5) Backend: venv & requirements (only if requirements.txt exists) ----------
+if [[ -f "${BACKEND_DIR}/requirements.txt" ]]; then
+  # copy requirements on-the-fly via stdin to avoid temp files
+  ${SSH_CMD} "${PI_HOST}" "\
+    if [ ! -d '${REMOTE_VENV}' ]; then python3 -m venv '${REMOTE_VENV}'; fi; \
+    '${REMOTE_VENV}/bin/pip' install --upgrade pip >/dev/null 2>&1 || true"
+  ${SSH_CMD} "${PI_HOST}" "cat > /tmp/req.txt" < "${BACKEND_DIR}/requirements.txt"
+  ${SSH_CMD} "${PI_HOST}" "'${REMOTE_VENV}/bin/pip' install -r /tmp/req.txt"
+  ${SSH_CMD} "${PI_HOST}" "rm -f /tmp/req.txt"
+fi
 
-  # Install backend files
-  install -m 0644 \"\${STAGE}/app.py\" '${REMOTE_APP_DIR}/app.py'
-  install -m 0755 \"\${STAGE}/poweron.sh\" '${REMOTE_POWER_SCRIPT}'
-
-  # If nginx config present in repo, install and reload nginx
-  if [ -f \"\${STAGE}/pi.conf\" ]; then
-    sudo install -m 0644 \"\${STAGE}/pi.conf\" '${REMOTE_NGX_AVAIL}'
-    if [ ! -e '${REMOTE_NGX_ENABLED}' ]; then
-      sudo ln -s '${REMOTE_NGX_AVAIL}' '${REMOTE_NGX_ENABLED}'
-    fi
-    sudo nginx -t
-    sudo systemctl reload nginx
-  fi
-
-  # Restart backend:
+# ---------- 6) Backend: respring backend process safely ----------
+# Prefer systemd (powerbtn.service). Otherwise, kill+nohup Waitress.
+${SSH_CMD} "${PI_HOST}" "\
   if systemctl list-unit-files | grep -q '^powerbtn\\.service'; then
     sudo systemctl daemon-reload
     sudo systemctl restart powerbtn.service
   else
     pkill -f 'waitress-serve --listen=127.0.0.1:8080' || true
-    nohup '${REMOTE_VENV}/bin/waitress-serve' --listen=127.0.0.1:8080 app:app \
-      --call >/dev/null 2>&1 &
+    nohup '${REMOTE_VENV}/bin/waitress-serve' --listen=127.0.0.1:8080 app:app --call >/dev/null 2>&1 &
     sleep 1
-  fi
+  fi"
 
-  echo 'Apply complete on Pi.'
-"
+# ---------- 7) Helpful summary ----------
+${SSH_CMD} "${PI_HOST}" "\
+  echo '--- DEPLOY SUMMARY ---'; \
+  echo 'app.py     -> ${REMOTE_APP}'; head -n1 '${REMOTE_APP}' || true; \
+  echo 'poweron.sh -> ${REMOTE_POWER_SCRIPT}'; ls -l '${REMOTE_POWER_SCRIPT}' || true; \
+  if [ ${PUSHED_NGINX} -eq 1 ]; then echo 'nginx: reloaded'; else echo 'nginx: unchanged'; fi; \
+  pgrep -af 'waitress-serve --listen=127.0.0.1:8080' || echo 'waitress not detected'; \
+  ss -ltnp 2>/dev/null | grep 127.0.0.1:8080 || true; \
+  echo '----------------------'"
 
 echo "Deployed → https://pi.davisbisbee.com"
