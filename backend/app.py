@@ -3,7 +3,7 @@
 from flask import Flask, abort, request
 import subprocess
 
-TOKEN = "bisbeepipower"
+TOKEN = "redacted"
 app = Flask(__name__)
 
 @app.post("/press")
